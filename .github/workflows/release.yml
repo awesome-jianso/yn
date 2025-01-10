@@ -83,6 +83,8 @@ jobs:
       - name: Electron-Linux
         if: matrix.platform == 'linux'
         run: |
+          sudo apt update
+          sudo apt install gcc-12 g++-12
           yarn run electron-builder --${{ matrix.platform }} -p never | sed 's/identityName=.*$//'
           find ./out -regex '.*app.asar.unpacked/node_modules/node-pty/build/Release/pty.node$' | grep pty.node
 
