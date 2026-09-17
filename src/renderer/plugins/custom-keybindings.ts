@@ -3,6 +3,7 @@ import type { Plugin } from '@fe/context'
 import type * as Monaco from 'monaco-editor'
 import { getLogger } from '@fe/utils'
 import { isMacOS } from '@fe/support/env'
+import { getEffectiveKeybinding, normalizePhysicalKey } from '@share/keybinding'
 
 const logger = getLogger('plugin:custom-keybindings')
 
@@ -115,6 +116,7 @@ function getCode (monaco: typeof Monaco, key: string): number {
       ']': monaco.KeyCode.BracketRight,
       '\'': monaco.KeyCode.Quote,
       'oem_8': monaco.KeyCode.OEM_8,
+      'plus': monaco.KeyCode.Equal,
       'intlbackslash': monaco.KeyCode.IntlBackslash,
       'numpad0': monaco.KeyCode.Numpad0,
       'numpad1': monaco.KeyCode.Numpad1,
@@ -134,10 +136,11 @@ function getCode (monaco: typeof Monaco, key: string): number {
     }
   }
 
-  return cachedMap[key.trim().toLowerCase()]
+  return cachedMap[normalizePhysicalKey(key.trim()).toLowerCase()]
 }
 
-function resolveKeys (monaco: typeof Monaco, keys: string | null): number {
+function resolveKeys (monaco: typeof Monaco, keys: string | null, binding?: string | null): number {
+  keys = getEffectiveKeybinding(keys, binding)
   if (!keys) {
     return 0
   }
@@ -227,10 +230,10 @@ export default {
             newKeybindings.push({ keybinding: originMonacoKeys, command: `-${keybinding.command}`, when })
           }
 
-          const monacoKeys = resolveKeys(monaco, keybinding.keys)
+          const monacoKeys = resolveKeys(monaco, keybinding.keys, keybinding.binding)
 
           if (!monacoKeys && keybinding.keys) {
-            logger.warn('updateEditorKeybindings', `invalid keybinding ${keybinding.keys} for command ${keybinding.command}`)
+            logger.warn('updateEditorKeybindings', `invalid keybinding ${keybinding.binding || keybinding.keys} for command ${keybinding.command}`)
           }
 
           if (monacoKeys) {
@@ -257,7 +260,10 @@ export default {
       )
 
       if (keybindings[action.name]) {
-        action.keys = keybindings[action.name].keys?.split('+') || []
+        const custom = keybindings[action.name]
+        const keys = getEffectiveKeybinding(custom.keys, custom.binding)
+        action.keys = keys?.split('+') || []
+        action.binding = custom.binding || null
       }
     })
 

@@ -26,7 +26,7 @@
               <td :class="{modified: item.modified}">
                 <kbd v-for="key in item.keys" :key="key">{{ key }}</kbd>
                 <i v-if="item.keys.length === 0">{{ t('keyboard-shortcuts.not-set') }}</i>
-                <a href="javascript:void(0)" v-else-if="getConflictCommands(item.keys).length > 1" @click="viewConflict(item.keys)">
+                <a href="javascript:void(0)" v-else-if="getConflictCommands(item.keybinding.split('+'), item.binding).length > 1" @click="viewConflict(item.keybinding.split('+'), item.binding)">
                   <i>{{ t('keyboard-shortcuts.conflict') }}</i>
                 </a>
               </td>
@@ -61,7 +61,7 @@
     <div v-if="shortcuts" class="output">
       {{ getKeysLabel(shortcuts) }}
     </div>
-    <div class="conflict" v-if="conflictCommands.length" @click="viewConflict(shortcuts)">
+    <div class="conflict" v-if="conflictCommands.length" @click="viewConflict(shortcuts, serializeKeybinding(recordedBinding))">
       {{ $t('keyboard-shortcuts.recorder.conflict-commands', String(conflictCommands.length)) }}
     </div>
   </div>
@@ -72,13 +72,15 @@ import { keyBy } from 'lodash-es'
 import { computed, h, onUnmounted, ref, shallowRef, watch, watchEffect } from 'vue'
 import { getDefaultApplicationAccelerators } from '@share/misc'
 import { getRawActions, registerAction, removeAction } from '@fe/core/action'
-import { Alt, Cmd, Ctrl, Meta, Shift, Win, disableShortcuts, enableShortcuts, getKeyLabel, getKeysLabel } from '@fe/core/keybinding'
+import { Alt, Cmd, Ctrl, Meta, Shift, Space, Win, disableShortcuts, enableShortcuts, getKeyLabel, getKeysLabel } from '@fe/core/keybinding'
 import { isMacOS, isOtherOS, isWindows } from '@fe/support/env'
 import { useModal } from '@fe/support/ui/modal'
 import { getSetting, setSetting } from '@fe/services/setting'
 import { getCurrentLanguage, useI18n } from '@fe/services/i18n'
 import { lookupKeybindingKeys, whenEditorReady } from '@fe/services/editor'
 import { getLogger } from '@fe/utils'
+import { getDisplayKeybinding, getEffectiveKeybinding, normalizePhysicalKey, serializeKeybinding } from '@share/keybinding'
+import type { RecordedKeybinding } from '@share/keybinding'
 import type { Action, Keybinding } from '@fe/types'
 
 import XMask from '@fe/components/Mask.vue'
@@ -89,6 +91,8 @@ type Item = {
   description?: string,
   keys: string[],
   keybinding: string,
+  effectiveKeybinding: string,
+  binding?: string | null,
   modified: boolean,
   unavailable?: boolean,
 }
@@ -113,6 +117,7 @@ const managerVisible = ref(false)
 const currentCommand = ref('')
 const filterStr = ref('')
 const shortcuts = shallowRef<string[] | null>(null)
+const recordedBinding = shallowRef<RecordedKeybinding | null>(null)
 const commands = shallowRef<XCommand[]>([])
 const keybindings = shallowRef<Keybinding[]>([])
 
@@ -128,13 +133,18 @@ const list = computed<Item[]>(() => {
 
   const data = _commands.filter(x => x.type === _tab).map((item) => {
     const modified = !!bindings[item.name]
-    const keys = modified ? (bindings[item.name].keys?.split('+') || []) || item.keys : item.keys
+    const customKeys = modified
+      ? getDisplayKeybinding(bindings[item.name].keys, bindings[item.name].binding)?.split('+')
+      : null
+    const keys = customKeys || item.keys
 
     return {
       command: item.name,
       description: item.description,
       keys: (keys || []).map(getKeyLabel),
       keybinding: keys?.join('+') || '',
+      effectiveKeybinding: getEffectiveKeybinding(keys?.join('+'), bindings[item.name]?.binding)?.toLowerCase() || '',
+      binding: bindings[item.name]?.binding,
       modified,
     }
   })
@@ -145,11 +155,14 @@ const list = computed<Item[]>(() => {
   const unavailable = _currentTypeKeybindings.filter(x => !availableIds.includes(x.command))
 
   return data.concat(unavailable.map((item) => {
+    const keys = getDisplayKeybinding(item.keys, item.binding)?.split('+') || []
     return {
       command: item.command,
       description: t('keyboard-shortcuts.unavailable'),
-      keys: (item.keys?.split('+') || []).map(getKeyLabel),
-      keybinding: item.keys || '',
+      keys: keys.map(getKeyLabel),
+      keybinding: keys.join('+'),
+      effectiveKeybinding: getEffectiveKeybinding(keys.join('+'), item.binding)?.toLowerCase() || '',
+      binding: item.binding,
       modified: true,
       unavailable: true,
     }
@@ -169,7 +182,7 @@ const items = computed(() => {
     }
 
     if (str === '#') {
-      return getConflictCommands(x.keys).length > 1
+      return getConflictCommands(x.keybinding.split('+'), x.binding).length > 1
     }
 
     return x.command.toLowerCase().includes(filterStr.value) ||
@@ -178,7 +191,7 @@ const items = computed(() => {
   })
 })
 
-function getConflictCommands (keys: (number | string)[]) {
+function getConflictCommands (keys: (number | string)[], binding?: string | null) {
   const commands = list.value.filter(x => !x.unavailable)
 
   // do not check Enter, Esc conflict for editor commands
@@ -186,16 +199,16 @@ function getConflictCommands (keys: (number | string)[]) {
     return []
   }
 
-  const keyLabels = getKeysLabel(keys)
-  if (!keyLabels) {
+  const effective = getEffectiveKeybinding(keys.join('+'), binding)?.toLowerCase()
+  if (!effective) {
     return []
   }
 
-  return commands.filter(x => getKeysLabel(x.keys) === keyLabels)
+  return commands.filter(x => x.effectiveKeybinding === effective)
 }
 
 const conflictCommands = computed(() => {
-  return getConflictCommands(shortcuts.value || [])
+  return getConflictCommands(shortcuts.value || [], serializeKeybinding(recordedBinding.value))
 })
 
 async function refresh () {
@@ -257,12 +270,12 @@ function revealCommand (commandId: string) {
   }
 }
 
-function viewConflict (keys: string[] | null) {
+function viewConflict (keys: string[] | null, binding?: string | null) {
   if (!keys) {
     return
   }
 
-  const commands = getConflictCommands(keys)
+  const commands = getConflictCommands(keys, binding)
   useModal().alert({
     title: t('keyboard-shortcuts.conflict-title', getKeysLabel(keys)),
     component: h('div', [
@@ -272,15 +285,21 @@ function viewConflict (keys: string[] | null) {
   })
 }
 
-async function updateCommand (command: string, keys: string[] | null) {
-  logger.debug('updateCommand', command, keys)
+async function updateCommand (command: string, keys: string[] | null, binding: RecordedKeybinding | null = null) {
+  logger.debug('updateCommand', command, keys, binding)
 
   const data = getSetting('keybindings', []).filter(x => (
     x.command !== command || x.type !== tab.value
   ))
 
   if (keys) {
-    data.push({ type: tab.value, command, keys: keys.join('+') || null })
+    const keyString = keys.join('+') || null
+    const entry: Keybinding = { type: tab.value, command, keys: keyString }
+    const bindingString = serializeKeybinding(binding)
+    if (bindingString) {
+      entry.binding = bindingString
+    }
+    data.push(entry)
   }
 
   keybindings.value = data
@@ -296,19 +315,60 @@ async function clearShortcuts (command: string) {
 
 function editShortcuts (command: string) {
   currentCommand.value = command
+  recordedBinding.value = null
 }
 
 function resetShortcuts (command: string) {
   updateCommand(command, null)
 }
 
+function getRecordedKey (e: KeyboardEvent) {
+  const key = e.key || ''
+  const code = e.code || ''
+
+  // Preserve keypad identity instead of collapsing it into the row number.
+  if (code.startsWith('Numpad')) {
+    return code
+  }
+
+  // These keys cannot be represented as a logical character reliably.
+  if (key === 'Dead' || key === 'Unidentified' || key === 'Process') {
+    return normalizePhysicalKey(code)
+  }
+
+  if (key === ' ') {
+    return Space
+  }
+
+  // `+` cannot be stored directly because `+` separates settings tokens.
+  if (key === '+') {
+    return '='
+  }
+
+  if (key.length === 1) {
+    return key.toLowerCase()
+  }
+
+  // Keep the existing short names for directional keys.
+  if (key.startsWith('Arrow')) {
+    return key.slice(5)
+  }
+
+  return key
+}
+
 function recordKey (e: KeyboardEvent) {
+  if (e.isComposing || e.repeat || e.key === 'Process') {
+    return
+  }
+
   e.preventDefault()
   e.stopPropagation()
 
   if (e.key === 'Escape') {
     currentCommand.value = ''
     shortcuts.value = null
+    recordedBinding.value = null
     return
   }
 
@@ -323,35 +383,44 @@ function recordKey (e: KeyboardEvent) {
 
   const keys = Object.keys(modifiers).filter((key) => modifiers[key])
 
-  if (!['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
-    let val = e.code
-    if (val.startsWith('Key')) {
-      val = val.slice(3)
-    } else if (val.startsWith('Digit')) {
-      val = val.slice(5)
-    } else if (val.startsWith('Arrow')) {
-      val = val.slice(5)
-    } else if (val.startsWith('Numpad')) {
-      val = e.code
-    } else if (val === 'Equal') { // avoid conflict with '+'
-      val = '='
-    } else if ('`-=[]\\;\',./{}|:"<>?~!@#$%^&*()_'.includes(e.key)) {
-      val = e.key
-    }
-
-    keys.push(val)
-  }
-
+  // Enter confirms the recorded shortcut. Do this before collecting Enter's
+  // own code so it cannot replace the code of the shortcut being saved.
   if (e.key === 'Enter' && keys.length <= 1) {
     if (currentCommand.value && shortcuts.value && shortcuts.value.length) {
-      updateCommand(currentCommand.value, shortcuts.value)
+      updateCommand(currentCommand.value, shortcuts.value, recordedBinding.value)
     }
 
     currentCommand.value = ''
     shortcuts.value = null
-  } else {
-    shortcuts.value = keys
+    recordedBinding.value = null
+    return
   }
+
+  const modifierKeys = ['Control', 'Alt', 'Shift', 'Meta', 'AltGraph']
+
+  if (!modifierKeys.includes(e.key)) {
+    const val = getRecordedKey(e)
+    if (val) {
+      keys.push(val)
+      // Monaco has no KeyCode for many produced symbols (for example
+      // Shift+1 -> !), so use the recorded physical code for these keys.
+      const physical = e.code.startsWith('Numpad') || e.key === 'Dead' || e.key === 'Unidentified' ||
+        (e.key.length === 1 && e.key !== ' ' && !/^[a-z0-9]$/i.test(e.key))
+      recordedBinding.value = {
+        mode: physical ? 'code' : 'key',
+        key: e.key || val,
+        code: e.code || '',
+        ctrl: e.ctrlKey,
+        alt: e.altKey,
+        shift: e.shiftKey,
+        meta: e.metaKey,
+        altGraph: e.getModifierState?.('AltGraph') || false,
+        location: e.location || 0,
+      }
+    }
+  }
+
+  shortcuts.value = keys
 }
 
 watchEffect(() => {

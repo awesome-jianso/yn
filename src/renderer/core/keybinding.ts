@@ -2,6 +2,7 @@ import { upperFirst } from 'lodash-es'
 import { getLogger } from '@fe/utils'
 import { isMacOS, isOtherOS, isWindows } from '@fe/support/env'
 import { FLAG_DISABLE_SHORTCUTS } from '@fe/support/args'
+import { parseKeybinding } from '@share/keybinding'
 import type { BuildInActions } from '@fe/types'
 import { getAction, getActionHandler, getRawActions } from './action'
 import { triggerHook } from './hook'
@@ -23,6 +24,75 @@ export const LeftClick = 0
 export const Tab = 'Tab'
 
 type XKey = typeof Ctrl | typeof CtrlCmd | typeof Alt | typeof Shift
+
+const physicalKeyPrefixes = ['KEY', 'DIGIT', 'NUMPAD', 'ARROW']
+const physicalKeyNames = new Set([
+  'BACKQUOTE',
+  'BACKSLASH',
+  'BRACKETLEFT',
+  'BRACKETRIGHT',
+  'COMMA',
+  'EQUAL',
+  'MINUS',
+  'PERIOD',
+  'QUOTE',
+  'SEMICOLON',
+  'SLASH',
+  'SPACE',
+  'TAB',
+])
+
+const logicalKeyAliases: Record<string, string> = {
+  UP: 'ARROWUP',
+  DOWN: 'ARROWDOWN',
+  LEFT: 'ARROWLEFT',
+  RIGHT: 'ARROWRIGHT',
+}
+
+function isPhysicalKey (key: string) {
+  return physicalKeyPrefixes.some(prefix => key.startsWith(prefix)) || physicalKeyNames.has(key)
+}
+
+function matchKeyboardKey (e: KeyboardEvent, key: string) {
+  const eCode = (e.code || '').toUpperCase()
+  const eKey = (e.key || '').toUpperCase()
+  const iKey = key.toUpperCase()
+
+  if (iKey === 'PLUS') {
+    return e.key === '+'
+  }
+
+  // Any configured code that differs from the produced character is an
+  // explicit physical-key binding, including less common codes such as
+  // IntlBackslash.
+  if (iKey === eCode && iKey !== eKey) {
+    return true
+  }
+
+  if (isPhysicalKey(iKey)) {
+    return iKey === eCode
+  }
+
+  if (iKey === eKey || logicalKeyAliases[iKey] === eKey) {
+    return true
+  }
+
+  // Dead and unidentified keys have no stable logical value. Fall back to
+  // the physical code so they can still invoke a shortcut when needed.
+  if ((e.key === 'Dead' || e.key === 'Unidentified') && eCode === `KEY${iKey}`) {
+    return true
+  }
+
+  // Legacy `+` is stored as `=` because `+` separates settings tokens.
+  return iKey === '=' && eKey === '+' && eCode === 'EQUAL'
+}
+
+function matchLegacyKeyboardKey (e: KeyboardEvent, key: string) {
+  const code = (e.code || '').toUpperCase()
+  const name = key.toUpperCase()
+  return name === (e.key || '').toUpperCase() || name === code ||
+    code === `KEY${name}` || code === `DIGIT${name}` || code === `ARROW${name}`
+}
 
 let keys: Record<string, boolean> = {}
 
@@ -106,12 +176,19 @@ export function getKeyLabel (key: XKey | string | number) {
  * @param keys
  * @returns
  */
-export function matchKeys (e: KeyboardEvent | MouseEvent, keys: (string | number)[]) {
+export function matchKeys (e: KeyboardEvent | MouseEvent, keys: (string | number)[], binding?: string | null) {
   if (keys.length === 0) {
     return false
   }
 
   const modifiers = { metaKey: false, ctrlKey: false, altKey: false, shiftKey: false }
+  const parsed = parseKeybinding(binding)
+
+  if (parsed && e instanceof KeyboardEvent &&
+    (Boolean(e.getModifierState?.('AltGraph')) !== parsed.altGraph ||
+      (parsed.location > 0 && e.location !== parsed.location))) {
+    return false
+  }
 
   for (const key of keys) {
     switch (key.toString().toUpperCase()) {
@@ -151,17 +228,7 @@ export function matchKeys (e: KeyboardEvent | MouseEvent, keys: (string | number
         // if the event from iframe, it not instance of KeyboardEvent.
         if (e instanceof KeyboardEvent || '' + e === '[object KeyboardEvent]') {
           e = e as KeyboardEvent
-          const eCode = e.code.toUpperCase()
-          const eKey = e.key.toUpperCase()
-          const iKey = key.toString().toUpperCase()
-
-          if (
-            iKey !== eKey &&
-            iKey !== eCode &&
-            `KEY${iKey}` !== eCode &&
-            `DIGIT${iKey}` !== eCode &&
-            `ARROW${iKey}` !== eCode
-          ) return false
+          if (!(binding !== undefined && !parsed ? matchLegacyKeyboardKey(e, key.toString()) : matchKeyboardKey(e, key.toString()))) return false
         } else {
           if (key !== e.button) return false
         }
@@ -211,7 +278,7 @@ export function keydownHandler (e: KeyboardEvent) {
 
   for (const item of getRawActions()) {
     const action = getAction(item.name)
-    if (action && action.keys && matchKeys(e, action.keys)) {
+    if (action && action.keys && matchKeys(e, action.keys, action.binding)) {
       if (action.when && !action.when()) {
         continue
       }

@@ -4,6 +4,7 @@ import { FLAG_DISABLE_SERVER } from './constant'
 import { getAction, registerAction } from './action'
 import config from './config'
 import { getDefaultApplicationAccelerators } from '../share/misc'
+import { getEffectiveKeybinding, normalizePhysicalKey } from '../share/keybinding'
 
 const platform = os.platform()
 
@@ -17,16 +18,18 @@ export const getAccelerator = (command: AcceleratorCommand): string | undefined 
     .find((item: any) => item.type === 'application' && item.command === command)
 
   if (customKeybinding) {
-    const keys = customKeybinding.keys
+    const keys = getEffectiveKeybinding(customKeybinding.keys, customKeybinding.binding)
 
     if (keys) {
-      return keys.replace(/(Arrow|Key|Digit)/ig, '')
-        .replace(/NumpadAdd/ig, 'numadd')
-        .replace(/NumpadSubtract/ig, 'numsub')
-        .replace(/NumpadMultiply/ig, 'nummult')
-        .replace(/NumpadDivide/ig, 'numdiv')
-        .replace(/NumpadDecimal/ig, 'numdec')
-        .replace(/Numpad/ig, 'num')
+      const parts = keys.split('+').map(part => part === 'Win' ? 'Super' : part)
+      const key = normalizePhysicalKey(parts.pop()!)
+      const numpadKeys: Record<string, string> = {
+        Add: 'add', Subtract: 'sub', Multiply: 'mult', Divide: 'div', Decimal: 'dec',
+      }
+      parts.push(key.startsWith('Numpad')
+        ? `num${numpadKeys[key.slice(6)] || key.slice(6)}`
+        : key === '+' ? 'Plus' : key)
+      return parts.join('+')
     } else {
       return undefined
     }

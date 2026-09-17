@@ -101,6 +101,48 @@ describe('renderer keybinding utilities', () => {
     expect(keybinding.matchKeys(keyboardEvent('keydown', { key: 'o', code: 'KeyO' }), [])).toBe(false)
   })
 
+  test('matches logical characters without cross-triggering physical keys', async () => {
+    const keybinding = await import('@fe/core/keybinding')
+
+    // French AZERTY: the physical Z key produces the character W.
+    const azertyW = keyboardEvent('keydown', { key: 'w', code: 'KeyZ', ctrlKey: true })
+    expect(keybinding.matchKeys(azertyW, ['CtrlCmd', 'W'])).toBe(true)
+    expect(keybinding.matchKeys(azertyW, ['CtrlCmd', 'Z'])).toBe(false)
+
+    // Explicit physical key tokens remain available for layout-independent actions.
+    expect(keybinding.matchKeys(azertyW, ['CtrlCmd', 'KeyZ'])).toBe(true)
+    expect(keybinding.matchKeys(azertyW, ['CtrlCmd', 'KeyW'])).toBe(false)
+
+    // German QWERTZ: the physical Y key produces the character Z.
+    const qwertzZ = keyboardEvent('keydown', { key: 'z', code: 'KeyY', ctrlKey: true })
+    expect(keybinding.matchKeys(qwertzZ, ['CtrlCmd', 'Z'])).toBe(true)
+    expect(keybinding.matchKeys(qwertzZ, ['CtrlCmd', 'Y'])).toBe(false)
+
+    // `+` is persisted as `=` with Shift to keep `+` as the settings delimiter.
+    expect(keybinding.matchKeys(keyboardEvent('keydown', { key: '+', code: 'Equal', ctrlKey: true, shiftKey: true }), ['CtrlCmd', 'Shift', '='])).toBe(true)
+
+    // Physical code names outside the common prefix list remain supported.
+    expect(keybinding.matchKeys(keyboardEvent('keydown', { key: '<', code: 'IntlBackslash' }), ['IntlBackslash'])).toBe(true)
+  })
+
+  test('keeps legacy custom-key matching and checks recorded location and AltGraph', async () => {
+    const keybinding = await import('@fe/core/keybinding')
+    const qwertz = keyboardEvent('keydown', { key: 'z', code: 'KeyY', ctrlKey: true })
+    expect(keybinding.matchKeys(qwertz, ['Ctrl', 'Y'])).toBe(false)
+    expect(keybinding.matchKeys(qwertz, ['Ctrl', 'Y'], null)).toBe(true)
+
+    const numpad = keyboardEvent('keydown', { key: '1', code: 'Numpad1', ctrlKey: true, location: 3 })
+    expect(keybinding.matchKeys(numpad, ['Ctrl', 'Numpad1'], 'mode=code,key=1,code=Numpad1,ctrl,location=3')).toBe(true)
+    expect(keybinding.matchKeys(numpad, ['Ctrl', 'Numpad1'], 'mode=code,key=1,code=Numpad1,ctrl,location=1')).toBe(false)
+
+    const altGr = keyboardEvent('keydown', { key: '€', code: 'KeyE', ctrlKey: true, altKey: true })
+    vi.spyOn(altGr, 'getModifierState').mockReturnValue(true)
+    const binding = 'mode=code,key=%E2%82%AC,code=KeyE,ctrl,alt,altGraph,location=0'
+    expect(keybinding.matchKeys(altGr, ['Ctrl', 'Alt', 'KeyE'], binding)).toBe(true)
+    vi.mocked(altGr.getModifierState).mockReturnValue(false)
+    expect(keybinding.matchKeys(altGr, ['Ctrl', 'Alt', 'KeyE'], binding)).toBe(false)
+  })
+
   test('uses mac and other platform labels and modifiers', async () => {
     envMocks.isMacOS = true
     envMocks.isWindows = false

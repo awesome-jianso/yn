@@ -66,6 +66,44 @@ describe('main shortcut module', () => {
     expect(getAccelerator('hide-main-window')).toBeUndefined()
   })
 
+  test('prefers the physical key in the binding field', async () => {
+    mocks.configGet.mockReturnValue([
+      { type: 'application', command: 'show-main-window', keys: 'Ctrl+w', binding: 'mode=code,key=w,code=KeyZ,ctrl,location=0' },
+    ])
+    const { getAccelerator } = await loadShortcut()
+
+    expect(getAccelerator('show-main-window')).toBe('Ctrl+Z')
+  })
+
+  test('converts physical punctuation and keypad codes to Electron accelerators', async () => {
+    mocks.configGet.mockReturnValue([
+      { type: 'application', command: 'show-main-window', keys: 'Ctrl+,', binding: 'mode=code,key=%3C,code=Comma,ctrl,location=0' },
+      { type: 'application', command: 'open-in-browser', keys: 'Ctrl+Numpad1', binding: 'mode=code,key=1,code=Numpad1,ctrl,location=3' },
+    ])
+    const { getAccelerator } = await loadShortcut()
+
+    expect(getAccelerator('show-main-window')).toBe('Ctrl+,')
+    expect(getAccelerator('open-in-browser')).toBe('Ctrl+num1')
+  })
+
+  test('uses Electron Super for a recorded Windows key', async () => {
+    mocks.configGet.mockReturnValue([
+      { type: 'application', command: 'show-main-window', keys: 'Win+K', binding: 'mode=key,key=k,code=KeyK,meta,location=0' },
+    ])
+    const { getAccelerator } = await loadShortcut()
+
+    expect(getAccelerator('show-main-window')).toBe('Super+k')
+  })
+
+  test('registers shifted punctuation by its recorded physical key', async () => {
+    mocks.configGet.mockReturnValue([
+      { type: 'application', command: 'show-main-window', keys: 'Ctrl+Shift+!', binding: 'mode=code,key=!,code=Digit1,ctrl,shift,location=0' },
+    ])
+    const { getAccelerator } = await loadShortcut()
+
+    expect(getAccelerator('show-main-window')).toBe('Ctrl+Shift+1')
+  })
+
   test('registers shortcuts, reports failed registrations, and refreshes menus', async () => {
     const refreshMenus = vi.fn()
     mocks.getAction.mockImplementation((name: string) => name === 'refresh-menus' ? refreshMenus : undefined)
