@@ -481,6 +481,7 @@ export interface BuildInSettings {
   'proxy.bypass-list': string,
   'extension.registry': RegistryHostname,
   'extension.auto-upgrade': boolean,
+  'keybindings.non-us-layout': boolean,
   'keep-running-after-closing-window': boolean,
   'hide-main-window-on-startup': boolean,
   'plantuml-api': string,

@@ -8,6 +8,7 @@ const actionMocks = vi.hoisted(() => ({
 
 const hookMocks = vi.hoisted(() => ({
   triggerHook: vi.fn(),
+  registerHook: vi.fn(),
 }))
 
 const envMocks = vi.hoisted(() => ({
@@ -47,12 +48,14 @@ describe('renderer keybinding utilities', () => {
     envMocks.isMacOS = false
     envMocks.isOtherOS = false
     envMocks.isWindows = true
+    window._INIT_SETTINGS = { 'keybindings.non-us-layout': false }
     actionMocks.actions = []
     actionMocks.handler.mockClear()
     actionMocks.getAction.mockClear()
     actionMocks.getRawActions.mockClear()
     actionMocks.getActionHandler.mockClear()
     hookMocks.triggerHook.mockClear()
+    hookMocks.registerHook.mockClear()
   })
 
   function keyboardEvent (type: string, init: KeyboardEventInit) {
@@ -102,6 +105,7 @@ describe('renderer keybinding utilities', () => {
   })
 
   test('matches logical characters without cross-triggering physical keys', async () => {
+    window._INIT_SETTINGS['keybindings.non-us-layout'] = true
     const keybinding = await import('@fe/core/keybinding')
 
     // French AZERTY: the physical Z key produces the character W.
@@ -126,6 +130,7 @@ describe('renderer keybinding utilities', () => {
   })
 
   test('keeps legacy custom-key matching and checks recorded location and AltGraph', async () => {
+    window._INIT_SETTINGS['keybindings.non-us-layout'] = true
     const keybinding = await import('@fe/core/keybinding')
     const qwertz = keyboardEvent('keydown', { key: 'z', code: 'KeyY', ctrlKey: true })
     expect(keybinding.matchKeys(qwertz, ['Ctrl', 'Y'])).toBe(false)
@@ -141,6 +146,27 @@ describe('renderer keybinding utilities', () => {
     expect(keybinding.matchKeys(altGr, ['Ctrl', 'Alt', 'KeyE'], binding)).toBe(true)
     vi.mocked(altGr.getModifierState).mockReturnValue(false)
     expect(keybinding.matchKeys(altGr, ['Ctrl', 'Alt', 'KeyE'], binding)).toBe(false)
+  })
+
+  test('ignores binding metadata while the non-US option is disabled', async () => {
+    const keybinding = await import('@fe/core/keybinding')
+    const qwertz = keyboardEvent('keydown', { key: 'z', code: 'KeyY', ctrlKey: true })
+    const binding = 'mode=key,key=z,code=KeyY,ctrl,location=0'
+
+    expect(keybinding.matchKeys(qwertz, ['Ctrl', 'Y'], binding)).toBe(true)
+    expect(keybinding.matchKeys(qwertz, ['Ctrl', 'Z'], binding)).toBe(true)
+  })
+
+  test('updates matching when settings are fetched after startup', async () => {
+    const keybinding = await import('@fe/core/keybinding')
+    const qwertz = keyboardEvent('keydown', { key: 'z', code: 'KeyY', ctrlKey: true })
+    expect(keybinding.matchKeys(qwertz, ['Ctrl', 'Y'])).toBe(true)
+
+    const fetched = (hookMocks.registerHook.mock.calls as any[]).find(([name]) => name === 'SETTING_FETCHED')?.[1]
+    expect(fetched).toBeTypeOf('function')
+    fetched({ settings: { 'keybindings.non-us-layout': true } })
+    expect(keybinding.matchKeys(qwertz, ['Ctrl', 'Y'])).toBe(false)
+    expect(keybinding.matchKeys(qwertz, ['Ctrl', 'Z'])).toBe(true)
   })
 
   test('uses mac and other platform labels and modifiers', async () => {

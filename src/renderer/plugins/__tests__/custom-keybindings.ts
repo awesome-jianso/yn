@@ -39,6 +39,7 @@ function createMonaco () {
       Comma: 102,
       Minus: 103,
       Numpad1: 104,
+      IntlBackslash: 105,
     },
     editor: {
       addKeybindingRules: vi.fn(() => ({ dispose: vi.fn() })),
@@ -46,8 +47,9 @@ function createMonaco () {
   } as any
 }
 
-function createCtx (keybindings: any[]) {
+function createCtx (keybindings: any[], nonUsLayout = false) {
   const monaco = createMonaco()
+  const action = { name: 'workbench.open', keys: [] as string[], binding: undefined as string | null | undefined }
   const originalKeybinding = {
     when: { serialize: vi.fn(() => 'editorTextFocus') },
     resolvedKeybinding: {
@@ -67,7 +69,7 @@ function createCtx (keybindings: any[]) {
 
   return {
     action: {
-      tapAction: vi.fn((fn: any) => fn({ name: 'workbench.open', keys: [] })),
+      tapAction: vi.fn((fn: any) => fn(action)),
     },
     editor: {
       getEditor: vi.fn(() => ({ _standaloneKeybindingService: service })),
@@ -81,12 +83,13 @@ function createCtx (keybindings: any[]) {
     },
     registerHook: vi.fn((name: string, fn: any) => hookCallbacks.set(name, fn)),
     setting: {
-      getSetting: vi.fn((key: string, fallback?: any) => key === 'keybindings' ? keybindings : fallback),
+      getSetting: vi.fn((key: string, fallback?: any) => key === 'keybindings' ? keybindings : key === 'keybindings.non-us-layout' ? nonUsLayout : fallback),
     },
     triggerHook: vi.fn(),
     ui: { useToast: vi.fn(() => ({ show: vi.fn() })) },
     _hookCallbacks: hookCallbacks,
     _monaco: monaco,
+    _action: action,
   } as any
 }
 
@@ -111,6 +114,8 @@ describe('custom-keybindings plugin', () => {
     await ctx.editor.whenEditorReady.mock.results[0].value
 
     expect(ctx.action.tapAction).toHaveBeenCalledWith(expect.any(Function))
+    expect(ctx._action.keys).toEqual(['ctrl', '1'])
+    expect(ctx._action.binding).toBeUndefined()
     expect(ctx._monaco.editor.addKeybindingRules).toHaveBeenCalledWith([
       { command: '-editor.save', keybinding: expect.any(Number), when: 'editorTextFocus' },
       { command: 'editor.save', keybinding: (1 << 11) | (1 << 10) | 42, when: 'editorTextFocus' },
@@ -120,6 +125,23 @@ describe('custom-keybindings plugin', () => {
     ctx._hookCallbacks.get('SETTING_CHANGED')({ changedKeys: ['keybindings'] })
     expect(ctx.triggerHook).toHaveBeenCalledWith('COMMAND_KEYBINDING_CHANGED')
     expect(ctx._monaco.editor.addKeybindingRules).toHaveBeenCalledTimes(2)
+
+    ctx._hookCallbacks.get('SETTING_CHANGED')({ changedKeys: ['keybindings.non-us-layout'] })
+    expect(ctx._monaco.editor.addKeybindingRules).toHaveBeenCalledTimes(3)
+  })
+
+  test('uses binding metadata for workbench actions only while enabled', () => {
+    const binding = 'mode=code,key=w,code=KeyZ,ctrl,location=0'
+    const entries = [{ type: 'workbench', command: 'workbench.open', keys: 'Ctrl+w', binding }]
+    const legacyCtx = createCtx(entries)
+    customKeybindings.register(legacyCtx)
+    expect(legacyCtx._action.keys).toEqual(['Ctrl', 'w'])
+    expect(legacyCtx._action.binding).toBeUndefined()
+
+    const nonUsCtx = createCtx(entries, true)
+    customKeybindings.register(nonUsCtx)
+    expect(nonUsCtx._action.keys).toEqual(['Ctrl', 'KeyZ'])
+    expect(nonUsCtx._action.binding).toBe(binding)
   })
 
   test('maps logical editor letters to Monaco key codes', async () => {
@@ -138,7 +160,7 @@ describe('custom-keybindings plugin', () => {
   test('uses the physical key from a binding when present', async () => {
     const ctx = createCtx([
       { type: 'editor', command: 'editor.rename', keys: 'ctrl+w', binding: 'mode=code,key=w,code=KeyZ,ctrl,location=0' },
-    ])
+    ], true)
 
     customKeybindings.register(ctx)
     await ctx.editor.whenEditorReady.mock.results[0].value
@@ -148,13 +170,47 @@ describe('custom-keybindings plugin', () => {
     ])
   })
 
+  test('ignores binding metadata while the option is disabled', async () => {
+    const ctx = createCtx([
+      { type: 'editor', command: 'editor.rename', keys: 'ctrl+w', binding: 'mode=code,key=w,code=KeyZ,ctrl,location=0' },
+    ])
+
+    customKeybindings.register(ctx)
+    await ctx.editor.whenEditorReady.mock.results[0].value
+
+    expect(ctx._monaco.editor.addKeybindingRules).toHaveBeenCalledWith([
+      { command: 'editor.rename', keybinding: (1 << 11) | 56, when: undefined },
+    ])
+  })
+
+  test('enables additional physical key codes only in non-US mode', async () => {
+    const binding = 'mode=code,key=%3C,code=IntlBackslash,ctrl,location=0'
+    const entries = [{ type: 'editor', command: 'editor.layout', keys: 'Ctrl+IntlBackslash', binding }]
+    const legacyCtx = createCtx(entries)
+    customKeybindings.register(legacyCtx)
+    await legacyCtx.editor.whenEditorReady.mock.results[0].value
+    expect(legacyCtx._monaco.editor.addKeybindingRules).not.toHaveBeenCalled()
+
+    const nonUsCtx = createCtx(entries, true)
+    customKeybindings.register(nonUsCtx)
+    await nonUsCtx.editor.whenEditorReady.mock.results[0].value
+    expect(nonUsCtx._monaco.editor.addKeybindingRules).toHaveBeenCalledWith([
+      { command: 'editor.layout', keybinding: (1 << 11) | 105, when: undefined },
+    ])
+
+    const oldEntryCtx = createCtx([{ type: 'editor', command: 'editor.layout', keys: 'Ctrl+IntlBackslash' }], true)
+    customKeybindings.register(oldEntryCtx)
+    await oldEntryCtx.editor.whenEditorReady.mock.results[0].value
+    expect(oldEntryCtx._monaco.editor.addKeybindingRules).not.toHaveBeenCalled()
+  })
+
   test('maps recorded physical punctuation and keypad keys', async () => {
     const ctx = createCtx([
       { type: 'editor', command: 'editor.comma', keys: 'Ctrl+,', binding: 'mode=code,key=%3C,code=Comma,ctrl,location=0' },
       { type: 'editor', command: 'editor.minus', keys: 'Ctrl+-', binding: 'mode=code,key=-,code=Minus,ctrl,location=0' },
       { type: 'editor', command: 'editor.numpad', keys: 'Ctrl+Numpad1', binding: 'mode=code,key=1,code=Numpad1,ctrl,location=3' },
       { type: 'editor', command: 'editor.shiftDigit', keys: 'Ctrl+Shift+!', binding: 'mode=code,key=!,code=Digit1,ctrl,shift,location=0' },
-    ])
+    ], true)
 
     customKeybindings.register(ctx)
     await ctx.editor.whenEditorReady.mock.results[0].value

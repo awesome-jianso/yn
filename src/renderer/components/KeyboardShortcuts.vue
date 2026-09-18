@@ -51,6 +51,7 @@
         </table>
       </div>
       <div class="action">
+        <label><input type="checkbox" v-model="nonUsLayout" @change="changeNonUsLayout" /><b>{{ $t('keyboard-shortcuts.non-us-layout') }}</b></label>
         <button class="btn primary tr" @click="hide">{{$t('close')}}</button>
       </div>
     </div>
@@ -61,7 +62,7 @@
     <div v-if="shortcuts" class="output">
       {{ getKeysLabel(shortcuts) }}
     </div>
-    <div class="conflict" v-if="conflictCommands.length" @click="viewConflict(shortcuts, serializeKeybinding(recordedBinding))">
+    <div class="conflict" v-if="conflictCommands.length" @click="viewConflict(shortcuts, nonUsLayout ? serializeKeybinding(recordedBinding) : null)">
       {{ $t('keyboard-shortcuts.recorder.conflict-commands', String(conflictCommands.length)) }}
     </div>
   </div>
@@ -72,14 +73,15 @@ import { keyBy } from 'lodash-es'
 import { computed, h, onUnmounted, ref, shallowRef, watch, watchEffect } from 'vue'
 import { getDefaultApplicationAccelerators } from '@share/misc'
 import { getRawActions, registerAction, removeAction } from '@fe/core/action'
-import { Alt, Cmd, Ctrl, Meta, Shift, Space, Win, disableShortcuts, enableShortcuts, getKeyLabel, getKeysLabel } from '@fe/core/keybinding'
+import { Alt, Cmd, Ctrl, Meta, Shift, Win, disableShortcuts, enableShortcuts, getKeyLabel, getKeysLabel } from '@fe/core/keybinding'
+import { recordNonUsKey } from '@fe/non-us-keybinding'
 import { isMacOS, isOtherOS, isWindows } from '@fe/support/env'
 import { useModal } from '@fe/support/ui/modal'
 import { getSetting, setSetting } from '@fe/services/setting'
 import { getCurrentLanguage, useI18n } from '@fe/services/i18n'
 import { lookupKeybindingKeys, whenEditorReady } from '@fe/services/editor'
 import { getLogger } from '@fe/utils'
-import { getDisplayKeybinding, getEffectiveKeybinding, normalizePhysicalKey, serializeKeybinding } from '@share/keybinding'
+import { getDisplayKeybinding, getEffectiveKeybinding, serializeKeybinding } from '@share/keybinding'
 import type { RecordedKeybinding } from '@share/keybinding'
 import type { Action, Keybinding } from '@fe/types'
 
@@ -114,6 +116,7 @@ const logger = getLogger('keyboard-shortcuts')
 const listRef = ref<HTMLElement | null>(null)
 const tab = ref<Tab>('workbench')
 const managerVisible = ref(false)
+const nonUsLayout = ref(false)
 const currentCommand = ref('')
 const filterStr = ref('')
 const shortcuts = shallowRef<string[] | null>(null)
@@ -133,17 +136,16 @@ const list = computed<Item[]>(() => {
 
   const data = _commands.filter(x => x.type === _tab).map((item) => {
     const modified = !!bindings[item.name]
-    const customKeys = modified
-      ? getDisplayKeybinding(bindings[item.name].keys, bindings[item.name].binding)?.split('+')
-      : null
-    const keys = customKeys || item.keys
+    const keys = modified
+      ? (nonUsLayout.value ? getDisplayKeybinding(bindings[item.name].keys, bindings[item.name].binding) : bindings[item.name].keys)?.split('+') || []
+      : item.keys
 
     return {
       command: item.name,
       description: item.description,
       keys: (keys || []).map(getKeyLabel),
       keybinding: keys?.join('+') || '',
-      effectiveKeybinding: getEffectiveKeybinding(keys?.join('+'), bindings[item.name]?.binding)?.toLowerCase() || '',
+      effectiveKeybinding: (nonUsLayout.value ? getEffectiveKeybinding(keys?.join('+'), bindings[item.name]?.binding) : keys?.join('+'))?.toLowerCase() || '',
       binding: bindings[item.name]?.binding,
       modified,
     }
@@ -155,13 +157,13 @@ const list = computed<Item[]>(() => {
   const unavailable = _currentTypeKeybindings.filter(x => !availableIds.includes(x.command))
 
   return data.concat(unavailable.map((item) => {
-    const keys = getDisplayKeybinding(item.keys, item.binding)?.split('+') || []
+    const keys = (nonUsLayout.value ? getDisplayKeybinding(item.keys, item.binding) : item.keys)?.split('+') || []
     return {
       command: item.command,
       description: t('keyboard-shortcuts.unavailable'),
       keys: keys.map(getKeyLabel),
       keybinding: keys.join('+'),
-      effectiveKeybinding: getEffectiveKeybinding(keys.join('+'), item.binding)?.toLowerCase() || '',
+      effectiveKeybinding: (nonUsLayout.value ? getEffectiveKeybinding(keys.join('+'), item.binding) : keys.join('+'))?.toLowerCase() || '',
       binding: item.binding,
       modified: true,
       unavailable: true,
@@ -199,6 +201,11 @@ function getConflictCommands (keys: (number | string)[], binding?: string | null
     return []
   }
 
+  if (!nonUsLayout.value) {
+    const keyLabels = getKeysLabel(keys)
+    return keyLabels ? commands.filter(x => getKeysLabel(x.keys) === keyLabels) : []
+  }
+
   const effective = getEffectiveKeybinding(keys.join('+'), binding)?.toLowerCase()
   if (!effective) {
     return []
@@ -208,7 +215,7 @@ function getConflictCommands (keys: (number | string)[], binding?: string | null
 }
 
 const conflictCommands = computed(() => {
-  return getConflictCommands(shortcuts.value || [], serializeKeybinding(recordedBinding.value))
+  return getConflictCommands(shortcuts.value || [], nonUsLayout.value ? serializeKeybinding(recordedBinding.value) : null)
 })
 
 async function refresh () {
@@ -248,7 +255,13 @@ watch(tab, () => {
 
 function show () {
   filterStr.value = ''
+  nonUsLayout.value = getSetting('keybindings.non-us-layout', false)
   managerVisible.value = true
+  refresh()
+}
+
+async function changeNonUsLayout () {
+  await setSetting('keybindings.non-us-layout', nonUsLayout.value)
   refresh()
 }
 
@@ -295,7 +308,7 @@ async function updateCommand (command: string, keys: string[] | null, binding: R
   if (keys) {
     const keyString = keys.join('+') || null
     const entry: Keybinding = { type: tab.value, command, keys: keyString }
-    const bindingString = serializeKeybinding(binding)
+    const bindingString = nonUsLayout.value ? serializeKeybinding(binding) : null
     if (bindingString) {
       entry.binding = bindingString
     }
@@ -322,43 +335,8 @@ function resetShortcuts (command: string) {
   updateCommand(command, null)
 }
 
-function getRecordedKey (e: KeyboardEvent) {
-  const key = e.key || ''
-  const code = e.code || ''
-
-  // Preserve keypad identity instead of collapsing it into the row number.
-  if (code.startsWith('Numpad')) {
-    return code
-  }
-
-  // These keys cannot be represented as a logical character reliably.
-  if (key === 'Dead' || key === 'Unidentified' || key === 'Process') {
-    return normalizePhysicalKey(code)
-  }
-
-  if (key === ' ') {
-    return Space
-  }
-
-  // `+` cannot be stored directly because `+` separates settings tokens.
-  if (key === '+') {
-    return '='
-  }
-
-  if (key.length === 1) {
-    return key.toLowerCase()
-  }
-
-  // Keep the existing short names for directional keys.
-  if (key.startsWith('Arrow')) {
-    return key.slice(5)
-  }
-
-  return key
-}
-
 function recordKey (e: KeyboardEvent) {
-  if (e.isComposing || e.repeat || e.key === 'Process') {
+  if (nonUsLayout.value && (e.isComposing || e.repeat || e.key === 'Process')) {
     return
   }
 
@@ -383,44 +361,42 @@ function recordKey (e: KeyboardEvent) {
 
   const keys = Object.keys(modifiers).filter((key) => modifiers[key])
 
-  // Enter confirms the recorded shortcut. Do this before collecting Enter's
-  // own code so it cannot replace the code of the shortcut being saved.
-  if (e.key === 'Enter' && keys.length <= 1) {
-    if (currentCommand.value && shortcuts.value && shortcuts.value.length) {
-      updateCommand(currentCommand.value, shortcuts.value, recordedBinding.value)
-    }
-
-    currentCommand.value = ''
-    shortcuts.value = null
-    recordedBinding.value = null
+  if (nonUsLayout.value && e.key === 'Enter' && keys.length <= 1) {
+    finishRecording()
     return
   }
 
-  const modifierKeys = ['Control', 'Alt', 'Shift', 'Meta', 'AltGraph']
-
-  if (!modifierKeys.includes(e.key)) {
-    const val = getRecordedKey(e)
-    if (val) {
-      keys.push(val)
-      // Monaco has no KeyCode for many produced symbols (for example
-      // Shift+1 -> !), so use the recorded physical code for these keys.
-      const physical = e.code.startsWith('Numpad') || e.key === 'Dead' || e.key === 'Unidentified' ||
-        (e.key.length === 1 && e.key !== ' ' && !/^[a-z0-9]$/i.test(e.key))
-      recordedBinding.value = {
-        mode: physical ? 'code' : 'key',
-        key: e.key || val,
-        code: e.code || '',
-        ctrl: e.ctrlKey,
-        alt: e.altKey,
-        shift: e.shiftKey,
-        meta: e.metaKey,
-        altGraph: e.getModifierState?.('AltGraph') || false,
-        location: e.location || 0,
-      }
+  if (nonUsLayout.value) {
+    const recorded = recordNonUsKey(e)
+    if (recorded) {
+      keys.push(recorded.key)
+      recordedBinding.value = recorded.binding
     }
+  } else if (!['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
+    let val = e.code
+    if (val.startsWith('Key')) val = val.slice(3)
+    else if (val.startsWith('Digit')) val = val.slice(5)
+    else if (val.startsWith('Arrow')) val = val.slice(5)
+    else if (val.startsWith('Numpad')) val = e.code
+    else if (val === 'Equal') val = '='
+    else if ('`-=[]\\;\',./{}|:"<>?~!@#$%^&*()_'.includes(e.key)) val = e.key
+    keys.push(val)
   }
 
-  shortcuts.value = keys
+  if (!nonUsLayout.value && e.key === 'Enter' && keys.length <= 1) {
+    finishRecording()
+  } else {
+    shortcuts.value = keys
+  }
+}
+
+function finishRecording () {
+  if (currentCommand.value && shortcuts.value && (!nonUsLayout.value || shortcuts.value.length)) {
+    updateCommand(currentCommand.value, shortcuts.value, nonUsLayout.value ? recordedBinding.value : null)
+  }
+  currentCommand.value = ''
+  shortcuts.value = null
+  recordedBinding.value = null
 }
 
 watchEffect(() => {
@@ -595,8 +571,15 @@ table {
 
 .action {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
   padding-top: 10px;
+
+  label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
 }
 
 .recorder {

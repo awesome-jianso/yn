@@ -3,13 +3,14 @@ import type { Plugin } from '@fe/context'
 import type * as Monaco from 'monaco-editor'
 import { getLogger } from '@fe/utils'
 import { isMacOS } from '@fe/support/env'
-import { getEffectiveKeybinding, normalizePhysicalKey } from '@share/keybinding'
+import { getEffectiveKeybinding, parseKeybinding } from '@share/keybinding'
+import { getNonUsEditorKeys } from '@share/non-us-keybinding'
 
 const logger = getLogger('plugin:custom-keybindings')
 
 let cachedMap: Record<string, number>
 
-function getCode (monaco: typeof Monaco, key: string): number {
+function getCode (monaco: typeof Monaco, key: string, nonUsLayout = false): number {
   if (!cachedMap) {
     cachedMap = {
       'ctrl': isMacOS ? monaco.KeyMod.WinCtrl : monaco.KeyMod.CtrlCmd,
@@ -116,8 +117,6 @@ function getCode (monaco: typeof Monaco, key: string): number {
       ']': monaco.KeyCode.BracketRight,
       '\'': monaco.KeyCode.Quote,
       'oem_8': monaco.KeyCode.OEM_8,
-      'plus': monaco.KeyCode.Equal,
-      'intlbackslash': monaco.KeyCode.IntlBackslash,
       'numpad0': monaco.KeyCode.Numpad0,
       'numpad1': monaco.KeyCode.Numpad1,
       'numpad2': monaco.KeyCode.Numpad2,
@@ -136,11 +135,11 @@ function getCode (monaco: typeof Monaco, key: string): number {
     }
   }
 
-  return cachedMap[normalizePhysicalKey(key.trim()).toLowerCase()]
+  const name = key.trim().toLowerCase()
+  return nonUsLayout && name === 'intlbackslash' ? monaco.KeyCode.IntlBackslash : cachedMap[name]
 }
 
-function resolveKeys (monaco: typeof Monaco, keys: string | null, binding?: string | null): number {
-  keys = getEffectiveKeybinding(keys, binding)
+function resolveKeys (monaco: typeof Monaco, keys: string | null, nonUsLayout = false): number {
   if (!keys) {
     return 0
   }
@@ -149,7 +148,7 @@ function resolveKeys (monaco: typeof Monaco, keys: string | null, binding?: stri
   const keyNames = keys.split('+')
 
   for (const keyName of keyNames) {
-    const code = getCode(monaco, keyName)
+    const code = getCode(monaco, keyName, nonUsLayout)
     if (!code) {
       return 0
     }
@@ -216,6 +215,7 @@ export default {
         disposable = null
 
         const keybindings = ctx.setting.getSetting('keybindings', []).filter(x => x.type === 'editor')
+        const nonUsLayout = ctx.setting.getSetting('keybindings.non-us-layout', false)
         const newKeybindings: Parameters<typeof monaco.editor.addKeybindingRules>[0] = []
 
         for (const keybinding of keybindings) {
@@ -230,10 +230,11 @@ export default {
             newKeybindings.push({ keybinding: originMonacoKeys, command: `-${keybinding.command}`, when })
           }
 
-          const monacoKeys = resolveKeys(monaco, keybinding.keys, keybinding.binding)
+          const keys = nonUsLayout ? getNonUsEditorKeys(keybinding.keys, keybinding.binding) : keybinding.keys
+          const monacoKeys = resolveKeys(monaco, keys, nonUsLayout && !!parseKeybinding(keybinding.binding))
 
           if (!monacoKeys && keybinding.keys) {
-            logger.warn('updateEditorKeybindings', `invalid keybinding ${keybinding.binding || keybinding.keys} for command ${keybinding.command}`)
+            logger.warn('updateEditorKeybindings', `invalid keybinding ${keys} for command ${keybinding.command}`)
           }
 
           if (monacoKeys) {
@@ -261,14 +262,17 @@ export default {
 
       if (keybindings[action.name]) {
         const custom = keybindings[action.name]
-        const keys = getEffectiveKeybinding(custom.keys, custom.binding)
+        const nonUsLayout = ctx.setting.getSetting('keybindings.non-us-layout', false)
+        const keys = nonUsLayout ? getEffectiveKeybinding(custom.keys, custom.binding) : custom.keys
         action.keys = keys?.split('+') || []
-        action.binding = custom.binding || null
+        if (nonUsLayout) {
+          action.binding = custom.binding || null
+        }
       }
     })
 
     ctx.registerHook('SETTING_CHANGED', ({ changedKeys }) => {
-      if (changedKeys.includes('keybindings')) {
+      if (changedKeys.includes('keybindings') || changedKeys.includes('keybindings.non-us-layout')) {
         ctx.triggerHook('COMMAND_KEYBINDING_CHANGED')
         updateEditorKeybindings()
       }

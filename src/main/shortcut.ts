@@ -4,7 +4,8 @@ import { FLAG_DISABLE_SERVER } from './constant'
 import { getAction, registerAction } from './action'
 import config from './config'
 import { getDefaultApplicationAccelerators } from '../share/misc'
-import { getEffectiveKeybinding, normalizePhysicalKey } from '../share/keybinding'
+import { parseKeybinding } from '../share/keybinding'
+import { getNonUsAccelerator } from '../share/non-us-keybinding'
 
 const platform = os.platform()
 
@@ -18,21 +19,17 @@ export const getAccelerator = (command: AcceleratorCommand): string | undefined 
     .find((item: any) => item.type === 'application' && item.command === command)
 
   if (customKeybinding) {
-    const keys = getEffectiveKeybinding(customKeybinding.keys, customKeybinding.binding)
-
-    if (keys) {
-      const parts = keys.split('+').map(part => part === 'Win' ? 'Super' : part)
-      const key = normalizePhysicalKey(parts.pop()!)
-      const numpadKeys: Record<string, string> = {
-        Add: 'add', Subtract: 'sub', Multiply: 'mult', Divide: 'div', Decimal: 'dec',
-      }
-      parts.push(key.startsWith('Numpad')
-        ? `num${numpadKeys[key.slice(6)] || key.slice(6)}`
-        : key === '+' ? 'Plus' : key)
-      return parts.join('+')
-    } else {
-      return undefined
+    if (config.getAll()['keybindings.non-us-layout'] === true && parseKeybinding(customKeybinding.binding)) {
+      return getNonUsAccelerator(customKeybinding.keys, customKeybinding.binding)
     }
+
+    return customKeybinding.keys?.replace(/(Arrow|Key|Digit)/ig, '')
+      .replace(/NumpadAdd/ig, 'numadd')
+      .replace(/NumpadSubtract/ig, 'numsub')
+      .replace(/NumpadMultiply/ig, 'nummult')
+      .replace(/NumpadDivide/ig, 'numdiv')
+      .replace(/NumpadDecimal/ig, 'numdec')
+      .replace(/Numpad/ig, 'num') || undefined
   }
 
   return accelerators.find(a => a.command === command)?.accelerator || undefined
@@ -71,7 +68,7 @@ export const registerShortcut = (commands: typeof currentCommands, showAlert = f
 }
 
 function reload (changedKeys: string[]) {
-  if (changedKeys.includes('keybindings')) {
+  if (changedKeys.includes('keybindings') || changedKeys.includes('keybindings.non-us-layout')) {
     console.log('reload keybindings')
     registerShortcut(currentCommands, true)
   }
